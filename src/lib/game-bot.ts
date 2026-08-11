@@ -151,6 +151,10 @@ function registrationErrorText(status: string) {
     return "Такой команды нет. Проверьте код или напишите организатору.";
   }
 
+  if (status === "not_reserved") {
+    return "Вы не назначены капитаном команды. Если это ошибка, напишите организатору: он освободит слот или даст код вида /start team-7.";
+  }
+
   return "Свободных команд нет. Напишите организатору.";
 }
 
@@ -292,6 +296,11 @@ async function handleDocumentMessage(
       message.chat.id,
       "Сначала нажмите /start, чтобы занять свободную команду, и файл попадёт в админку.",
     );
+    return;
+  }
+
+  if (!team.captainChatId) {
+    await registerCaptain(message);
     return;
   }
 

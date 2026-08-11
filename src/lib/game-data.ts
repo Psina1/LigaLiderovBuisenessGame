@@ -431,6 +431,13 @@ export async function autoAssignCaptain(
   );
 
   if (existingTeam) {
+    if (
+      existingTeam.captainTelegramId === String(captain.telegramId) &&
+      !existingTeam.captainChatId
+    ) {
+      return bindReservedCaptainToTeam(existingTeam.id, captain, captainName);
+    }
+
     return { status: "already_registered" as const, team: existingTeam };
   }
 
@@ -446,6 +453,14 @@ export async function autoAssignCaptain(
     }
 
     return assignCaptainToTeam(requestedTeam.id, captain, captainName);
+  }
+
+  const hasReservedCaptains = snapshot.teams.some(
+    (team) => team.captainTelegramId && !team.captainChatId,
+  );
+
+  if (hasReservedCaptains) {
+    return { status: "not_reserved" as const, team: null };
   }
 
   if (snapshot.game.status !== "waiting") {
@@ -465,6 +480,44 @@ export async function autoAssignCaptain(
   }
 
   return { status: "full" as const, team: null };
+}
+
+async function bindReservedCaptainToTeam(
+  teamId: string,
+  captain: CaptainInput,
+  captainName: string,
+) {
+  const supabase = getSupabaseServiceClient();
+  const { data, error } = await supabase
+    .from("teams")
+    .update({
+      captain_chat_id: captain.chatId,
+      captain_username: captain.username ?? null,
+      captain_name: captainName,
+      captain_bound_at: new Date().toISOString(),
+    })
+    .eq("id", teamId)
+    .eq("captain_telegram_id", captain.telegramId)
+    .is("captain_chat_id", null)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    return { status: "already_taken" as const, team: await getTeam(teamId) };
+  }
+
+  await addEvent("captain", "captain.bound", teamId, {
+    telegramId: captain.telegramId,
+    username: captain.username,
+    captainName,
+    reserved: true,
+  });
+
+  return { status: "registered" as const, team: await getTeam(teamId) };
 }
 
 export async function releaseCaptain(teamId: string) {
@@ -594,7 +647,7 @@ export async function advanceGame(durationSeconds = 600) {
 
   const snapshot = await getSnapshot();
   const blockers = snapshot.teams
-    .filter((team) => team.captainTelegramId && team.status !== "ready")
+    .filter((team) => team.captainChatId && team.status !== "ready")
     .map((team) => team.name);
 
   if (blockers.length) {
@@ -681,10 +734,8 @@ export async function resetGame() {
     .in("status", ["waiting", "running"]);
 
   const { error: teamsError } = await supabase.from("teams").update({
-    captain_telegram_id: null,
     captain_chat_id: null,
     captain_username: null,
-    captain_name: null,
     captain_bound_at: null,
   }).neq("id", "");
 

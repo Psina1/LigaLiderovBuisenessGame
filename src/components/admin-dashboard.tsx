@@ -59,9 +59,9 @@ export function AdminDashboard({
   const [filesError, setFilesError] = useState<string>();
   const [fileArchive, setFileArchive] = useState<FileArchiveItem[]>([]);
 
-  const activeTeams = snapshot.teams.filter((team) => team.captainTelegramId);
+  const activeTeams = snapshot.teams.filter((team) => team.captainChatId);
   const readyCount = activeTeams.filter((team) => team.status === "ready").length;
-  const connectedCount = snapshot.teams.filter((team) => team.captainTelegramId).length;
+  const connectedCount = activeTeams.length;
   const secondsLeft = getSecondsLeft(snapshot.game.deadlineAt, snapshot.serverNow);
   const teamsById = useMemo(
     () => new Map(snapshot.teams.map((team) => [team.id, team])),
@@ -586,8 +586,13 @@ function TeamCard({
   const adminDecisionTitle = getAdminDecisionTitle(team);
   const stageTitle = getTeamStageTitle(team);
   const nextAction = getTeamNextAction(team);
+  const captainStatus = team.captainChatId
+    ? (team.captainName ?? "Подключён")
+    : team.captainTelegramId
+      ? `${team.captainName ?? "Капитан"} — ждём /start`
+      : "Не подключён";
   const canOverride =
-    Boolean(team.captainTelegramId) &&
+    Boolean(team.captainChatId) &&
     ["awaiting-decision", "decision-selected"].includes(team.status);
 
   return (
@@ -614,9 +619,9 @@ function TeamCard({
 
       <dl className="grid grid-cols-2 overflow-hidden rounded-lg border border-slate-200 text-sm">
         <InfoCell
-          complete={Boolean(team.captainTelegramId)}
+          complete={Boolean(team.captainChatId)}
           label="Капитан"
-          value={team.captainName ?? "Не подключён"}
+          value={captainStatus}
         />
         <InfoCell
           complete={Boolean(team.selectedChoiceId)}
@@ -661,14 +666,14 @@ function TeamCard({
           <UserX className="h-3.5 w-3.5" />
           Освободить капитана
         </button>
-        {!team.captainTelegramId ? (
+        {!team.captainChatId ? (
           <span className="inline-flex items-center rounded-md bg-slate-100 px-2.5 py-1.5 text-xs font-bold text-slate-600">
-            код: /start {team.id}
+            {team.captainTelegramId ? "резерв: ждём /start" : `код: /start ${team.id}`}
           </span>
         ) : null}
       </div>
 
-      {Boolean(team.captainTelegramId) && choices.length ? (
+      {Boolean(team.captainChatId) && choices.length ? (
         <div className="mt-3 rounded-lg bg-slate-50 p-3">
           <div className="mb-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-500">
             {adminDecisionTitle}
@@ -835,7 +840,7 @@ function getDashboardNextAction(snapshot: GameSnapshot) {
     return "можно скачать файлы и анализировать решения";
   }
 
-  const activeTeams = snapshot.teams.filter((team) => team.captainTelegramId);
+  const activeTeams = snapshot.teams.filter((team) => team.captainChatId);
 
   if (!activeTeams.length) {
     return "ждём, пока капитаны зайдут в бота через /start";
@@ -885,7 +890,7 @@ function formatAuditEvent(
     return {
       subject: "Организатор",
       title: "Сбросил игру",
-      detail: "команды освобождены, создана новая сессия",
+      detail: "создана новая сессия, резервы капитанов сохранены",
     };
   }
 
