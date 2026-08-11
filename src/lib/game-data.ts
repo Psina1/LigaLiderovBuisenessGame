@@ -13,6 +13,7 @@ import type {
   AuditEvent,
   DecisionRecord,
   DecisionSource,
+  FileArchiveItem,
   DeliveryState,
   GameSnapshot,
   GameState,
@@ -45,6 +46,8 @@ type SessionRow = {
   duration_seconds: number;
   stage_opened_at: string | null;
   deadline_at: string | null;
+  created_at: string;
+  completed_at: string | null;
 };
 
 type TeamRow = {
@@ -96,6 +99,29 @@ type AuditRow = {
   team_id: string | null;
   actor_type: "captain" | "organizer" | "system";
   event_type: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+type FileArchiveRow = {
+  id: string;
+  session_id: string;
+  team_id: string;
+  stage_index: number;
+  file_name: string;
+  received_at: string;
+};
+
+type ArchiveSessionRow = {
+  id: string;
+  status: string;
+  created_at: string;
+  completed_at: string | null;
+};
+
+type CaptainEventRow = {
+  session_id: string;
+  team_id: string | null;
   payload: Record<string, unknown>;
   created_at: string;
 };
@@ -226,6 +252,105 @@ export async function getActiveTeams() {
   return (await getSnapshot()).teams;
 }
 
+export async function getFileArchive(): Promise<FileArchiveItem[]> {
+  if (!hasSupabaseConfig()) {
+    return [];
+  }
+
+  const supabase = getSupabaseServiceClient();
+  const { data: fileRows, error: filesError } = await supabase
+    .from("uploaded_files")
+    .select("id,session_id,team_id,stage_index,file_name,received_at")
+    .order("received_at", { ascending: false })
+    .limit(300);
+
+  if (filesError) {
+    throw filesError;
+  }
+
+  const files = (fileRows ?? []) as FileArchiveRow[];
+
+  if (!files.length) {
+    return [];
+  }
+
+  const sessionIds = [...new Set(files.map((file) => file.session_id))];
+  const [sessionsResult, teamsResult, captainEventsResult] = await Promise.all([
+    supabase
+      .from("game_sessions")
+      .select("id,status,created_at,completed_at")
+      .in("id", sessionIds),
+    supabase
+      .from("teams")
+      .select("id,team_number,name,color,captain_telegram_id,captain_name"),
+    supabase
+      .from("bot_events")
+      .select("session_id,team_id,payload,created_at")
+      .in("session_id", sessionIds)
+      .in("event_type", ["captain.bound", "captain.auto_bound", "captain.snapshot"])
+      .order("created_at", { ascending: true }),
+  ]);
+
+  const firstError =
+    sessionsResult.error ?? teamsResult.error ?? captainEventsResult.error;
+
+  if (firstError) {
+    throw firstError;
+  }
+
+  const sessionsById = new Map(
+    ((sessionsResult.data ?? []) as ArchiveSessionRow[]).map((session) => [
+      session.id,
+      session,
+    ]),
+  );
+  const teamsById = new Map(
+    ((teamsResult.data ?? []) as TeamRow[]).map((team) => [team.id, team]),
+  );
+  const captainsBySessionTeam = new Map<
+    string,
+    { captainName?: string; captainTelegramId?: string }
+  >();
+
+  for (const event of (captainEventsResult.data ?? []) as CaptainEventRow[]) {
+    if (!event.team_id) {
+      continue;
+    }
+
+    captainsBySessionTeam.set(`${event.session_id}:${event.team_id}`, {
+      captainName: readStringPayload(event.payload, "captainName"),
+      captainTelegramId: readStringPayload(event.payload, "telegramId"),
+    });
+  }
+
+  return files.map((file) => {
+    const session = sessionsById.get(file.session_id);
+    const team = teamsById.get(file.team_id);
+    const captainSnapshot = captainsBySessionTeam.get(`${file.session_id}:${file.team_id}`);
+
+    return {
+      id: file.id,
+      sessionId: file.session_id,
+      sessionStatus: (session?.status ?? "completed") as FileArchiveItem["sessionStatus"],
+      sessionStartedAt: session?.created_at ?? file.received_at,
+      sessionCompletedAt: session?.completed_at ?? undefined,
+      teamId: file.team_id,
+      teamName: team?.name ?? file.team_id,
+      teamNumber: Number(team?.team_number ?? file.team_id.replace(/\D/g, "")) || 0,
+      teamColor: team?.color ?? "red",
+      captainName:
+        captainSnapshot?.captainName ??
+        (team?.captain_name ?? undefined),
+      captainTelegramId:
+        captainSnapshot?.captainTelegramId ??
+        (team?.captain_telegram_id ? String(team.captain_telegram_id) : undefined),
+      stageIndex: file.stage_index,
+      fileName: file.file_name,
+      receivedAt: file.received_at,
+    };
+  });
+}
+
 export async function getTeam(teamId: string) {
   const team = (await getSnapshot()).teams.find((item) => item.id === teamId);
 
@@ -248,6 +373,7 @@ export async function bindCaptain(teamId: string, captain: CaptainInput) {
   const supabase = getSupabaseServiceClient();
   const snapshot = await getSnapshot();
   const team = snapshot.teams.find((item) => item.id === teamId);
+  const captainName = formatCaptainName(captain);
 
   if (!team) {
     return { status: "missing" as const, team: null };
@@ -274,7 +400,7 @@ export async function bindCaptain(teamId: string, captain: CaptainInput) {
       captain_telegram_id: captain.telegramId,
       captain_chat_id: captain.chatId,
       captain_username: captain.username ?? null,
-      captain_name: formatCaptainName(captain),
+      captain_name: captainName,
       captain_bound_at: new Date().toISOString(),
     })
     .eq("id", teamId);
@@ -285,6 +411,8 @@ export async function bindCaptain(teamId: string, captain: CaptainInput) {
 
   await addEvent("captain", "captain.bound", teamId, {
     telegramId: captain.telegramId,
+    username: captain.username,
+    captainName,
   });
 
   return { status: "registered" as const, team: await getTeam(teamId) };
@@ -293,6 +421,7 @@ export async function bindCaptain(teamId: string, captain: CaptainInput) {
 export async function autoAssignCaptain(captain: CaptainInput) {
   const supabase = getSupabaseServiceClient();
   const snapshot = await getSnapshot();
+  const captainName = formatCaptainName(captain);
   const existingTeam = snapshot.teams.find(
     (team) =>
       team.captainTelegramId === String(captain.telegramId) ||
@@ -314,7 +443,7 @@ export async function autoAssignCaptain(captain: CaptainInput) {
         captain_telegram_id: captain.telegramId,
         captain_chat_id: captain.chatId,
         captain_username: captain.username ?? null,
-        captain_name: formatCaptainName(captain),
+        captain_name: captainName,
         captain_bound_at: new Date().toISOString(),
       })
       .eq("id", team.id)
@@ -330,6 +459,8 @@ export async function autoAssignCaptain(captain: CaptainInput) {
     if (data) {
       await addEvent("captain", "captain.auto_bound", team.id, {
         telegramId: captain.telegramId,
+        username: captain.username,
+        captainName,
       });
 
       return { status: "registered" as const, team: await getTeam(team.id) };
@@ -399,7 +530,7 @@ export async function advanceGame(durationSeconds = 600) {
 
   const snapshot = await getSnapshot();
   const blockers = snapshot.teams
-    .filter((team) => team.status !== "ready")
+    .filter((team) => team.captainTelegramId && team.status !== "ready")
     .map((team) => team.name);
 
   if (blockers.length) {
@@ -462,6 +593,19 @@ export async function advanceGame(durationSeconds = 600) {
 
 export async function resetGame() {
   const supabase = getSupabaseServiceClient();
+  const snapshotBeforeReset = await getSnapshot();
+
+  await Promise.all(
+    snapshotBeforeReset.teams
+      .filter((team) => team.captainTelegramId)
+      .map((team) =>
+        addEvent("system", "captain.snapshot", team.id, {
+          captainName: team.captainName,
+          telegramId: team.captainTelegramId,
+        }),
+      ),
+  );
+
   await supabase
     .from("game_sessions")
     .update({
@@ -946,6 +1090,20 @@ function groupBy<T>(items: T[], getKey: (item: T) => string) {
   }
 
   return map;
+}
+
+function readStringPayload(payload: Record<string, unknown>, key: string) {
+  const value = payload[key];
+
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    return String(value);
+  }
+
+  return undefined;
 }
 
 function formatCaptainName(captain: CaptainInput) {

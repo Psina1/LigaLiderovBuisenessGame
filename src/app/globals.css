@@ -91,7 +91,40 @@ button:disabled {
   color: #334155;
 }
 
+.choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+@media (min-width: 1280px) {
+  .choice-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.choice-tile {
+  min-height: 3.25rem;
+  border-radius: 0.55rem;
+  border: 1px solid #e2e8f0;
+  background: white;
+  padding: 0.55rem 0.7rem;
+  text-align: center;
+  font-size: 0.75rem;
+  font-weight: 800;
+  line-height: 1.15;
+  color: #334155;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+}
+
+.choice-tile-selected {
+  border-color: #86efac;
+  background: #dcfce7;
+  color: #166534;
+}
+
 .force-button:hover:not(:disabled),
+.choice-tile:hover:not(:disabled),
 .secondary-button:hover:not(:disabled),
 .icon-button:hover:not(:disabled),
 .small-button:hover:not(:disabled) {

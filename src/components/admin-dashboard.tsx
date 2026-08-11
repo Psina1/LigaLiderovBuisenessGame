@@ -7,12 +7,21 @@ import {
   CheckCircle2,
   Clock,
   ClipboardList,
+  Download,
+  FileSpreadsheet,
   RefreshCw,
   RotateCcw,
   Send,
   Users,
 } from "lucide-react";
-import type { AuditEvent, GameSnapshot, TeamColor, TeamState } from "@/lib/game-types";
+import type {
+  AuditEvent,
+  Choice,
+  FileArchiveItem,
+  GameSnapshot,
+  TeamColor,
+  TeamState,
+} from "@/lib/game-types";
 import { getBotPrompt, getScenarioStage } from "@/lib/scenario";
 
 type AdminDashboardProps = {
@@ -44,8 +53,13 @@ export function AdminDashboard({
   );
   const [isGlobalActionPending, setIsGlobalActionPending] = useState(false);
   const [pendingTeamIds, setPendingTeamIds] = useState<Set<string>>(new Set());
+  const [isFilesOpen, setIsFilesOpen] = useState(false);
+  const [isFilesPending, setIsFilesPending] = useState(false);
+  const [filesError, setFilesError] = useState<string>();
+  const [fileArchive, setFileArchive] = useState<FileArchiveItem[]>([]);
 
-  const readyCount = snapshot.teams.filter((team) => team.status === "ready").length;
+  const activeTeams = snapshot.teams.filter((team) => team.captainTelegramId);
+  const readyCount = activeTeams.filter((team) => team.status === "ready").length;
   const connectedCount = snapshot.teams.filter((team) => team.captainTelegramId).length;
   const secondsLeft = getSecondsLeft(snapshot.game.deadlineAt, snapshot.serverNow);
   const teamsById = useMemo(
@@ -66,6 +80,36 @@ export function AdminDashboard({
 
     setSnapshot(data);
     setError(data.loadError);
+  }, [adminToken]);
+
+  const loadFileArchive = useCallback(async () => {
+    setIsFilesPending(true);
+    setFilesError(undefined);
+
+    try {
+      const response = await fetch(`/api/admin/files${tokenQuery(adminToken)}`, {
+        cache: "no-store",
+        headers: adminToken ? { "x-admin-token": adminToken } : undefined,
+      });
+      const data = (await response.json()) as {
+        files?: FileArchiveItem[];
+        error?: string;
+      };
+
+      if (!response.ok) {
+        throw new Error(data.error ?? "Не удалось загрузить список файлов");
+      }
+
+      setFileArchive(data.files ?? []);
+    } catch (archiveError) {
+      setFilesError(
+        archiveError instanceof Error
+          ? archiveError.message
+          : "Не удалось загрузить список файлов",
+      );
+    } finally {
+      setIsFilesPending(false);
+    }
   }, [adminToken]);
 
   useEffect(() => {
@@ -131,6 +175,18 @@ export function AdminDashboard({
     });
   }
 
+  function toggleFilesArchive() {
+    setIsFilesOpen((currentValue) => {
+      const nextValue = !currentValue;
+
+      if (nextValue) {
+        void loadFileArchive();
+      }
+
+      return nextValue;
+    });
+  }
+
   function action(payload: Record<string, unknown>) {
     const teamId = typeof payload.teamId === "string" ? payload.teamId : undefined;
 
@@ -156,7 +212,7 @@ export function AdminDashboard({
 
   return (
     <main className="min-h-screen bg-[#f3f3f8] text-slate-950">
-      <section className="mx-auto max-w-6xl px-4 py-7">
+      <section className="mx-auto max-w-[1540px] px-4 py-7">
         <header className="mb-5 flex items-start justify-between gap-4">
           <div className="flex items-center gap-4">
             <div className="flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl bg-slate-950 text-white shadow-sm">
@@ -205,7 +261,7 @@ export function AdminDashboard({
 
         <section className="mb-5 grid overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm md:grid-cols-[1fr_1fr_1fr_1fr_1.3fr]">
           <Metric title="Текущий статус" value={gameStatus(snapshot)} />
-          <Metric title="Готовность" value={`${readyCount} / ${snapshot.teams.length} команд`} />
+          <Metric title="Готовность" value={`${readyCount} / ${connectedCount} активных`} />
           <Metric title="Капитаны" value={`${connectedCount} / ${snapshot.teams.length}`} />
           <Metric title="Осталось времени" value={formatSeconds(secondsLeft)} />
           <div className="flex flex-col gap-3 border-t border-slate-200 p-4 md:border-l md:border-t-0">
@@ -316,10 +372,28 @@ export function AdminDashboard({
           </div>
         </section>
 
-        <footer className="mt-5 flex flex-wrap gap-2 text-xs text-slate-500">
+        <footer className="mt-5 flex flex-wrap items-center gap-2 text-xs text-slate-500">
           <span>Источник: {snapshot.source === "supabase" ? "Supabase" : "демо"}</span>
           <span>{authMode === "token" ? "Admin token включен" : "Admin token не задан"}</span>
+          <button
+            className="small-button ml-auto"
+            disabled={isFilesPending}
+            onClick={toggleFilesArchive}
+          >
+            <FileSpreadsheet className="h-3.5 w-3.5" />
+            {isFilesOpen ? "Скрыть Excel-файлы" : "Excel-файлы"}
+          </button>
         </footer>
+
+        {isFilesOpen ? (
+          <FileArchiveSection
+            adminToken={adminToken}
+            error={filesError}
+            files={fileArchive}
+            isPending={isFilesPending}
+            onRefresh={loadFileArchive}
+          />
+        ) : null}
       </section>
     </main>
   );
@@ -344,6 +418,104 @@ function AdminHint({ title, value }: { title: string; value: string }) {
       </div>
       <div className="mt-1 text-sm font-semibold leading-snug">{value}</div>
     </div>
+  );
+}
+
+function FileArchiveSection({
+  adminToken,
+  error,
+  files,
+  isPending,
+  onRefresh,
+}: {
+  adminToken: string;
+  error?: string;
+  files: FileArchiveItem[];
+  isPending: boolean;
+  onRefresh: () => void;
+}) {
+  const groups = groupFileArchive(files);
+
+  return (
+    <section className="mt-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em] text-slate-500">
+          <FileSpreadsheet className="h-4 w-4" />
+          Excel-файлы по сессиям
+        </div>
+        <button className="small-button" disabled={isPending} onClick={onRefresh}>
+          <RefreshCw className="h-3.5 w-3.5" />
+          Обновить список
+        </button>
+      </div>
+
+      {error ? (
+        <div className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm font-semibold text-red-800">
+          {error}
+        </div>
+      ) : null}
+
+      {!isPending && !files.length ? (
+        <div className="rounded-md border border-dashed border-slate-200 px-3 py-6 text-center text-sm text-slate-500">
+          Файлов пока нет.
+        </div>
+      ) : null}
+
+      <div className="space-y-4">
+        {groups.map((group) => (
+          <div key={group.sessionId} className="overflow-hidden rounded-lg border border-slate-200">
+            <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 px-3 py-2 text-sm">
+              <div className="font-black">
+                Сессия от {formatDate(group.startedAt)}
+                <span className="ml-2 text-xs font-semibold text-slate-500">
+                  #{group.sessionId.slice(0, 8)}
+                </span>
+              </div>
+              <div className="text-xs font-bold uppercase tracking-[0.08em] text-slate-500">
+                {sessionStatusLabel(group.status)}
+                {group.completedAt ? ` · завершена ${formatDate(group.completedAt)}` : ""}
+              </div>
+            </div>
+
+            <div className="divide-y divide-slate-100">
+              {group.files.map((file) => (
+                <div
+                  key={file.id}
+                  className="grid gap-2 px-3 py-3 text-sm lg:grid-cols-[130px_180px_170px_1fr_120px]"
+                >
+                  <div className="font-black">
+                    {file.teamName}
+                    <div className="text-xs font-semibold text-slate-500">
+                      {file.teamColor === "red" ? "красная" : "синяя"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-black uppercase tracking-[0.08em] text-slate-500">
+                      Капитан
+                    </div>
+                    <div className="font-semibold">{file.captainName ?? "неизвестен"}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-black uppercase tracking-[0.08em] text-slate-500">
+                      Этап
+                    </div>
+                    <div className="font-semibold">Этап {file.stageIndex + 1}</div>
+                  </div>
+                  <a
+                    className="inline-flex items-center gap-2 font-bold text-blue-700 underline-offset-2 hover:underline"
+                    href={`/api/admin/files/${file.id}${tokenQuery(adminToken)}`}
+                  >
+                    <Download className="h-4 w-4 shrink-0" />
+                    <span className="break-all">{file.fileName}</span>
+                  </a>
+                  <div className="text-slate-500">{formatDate(file.receivedAt)}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -405,7 +577,7 @@ function TeamCard({
       return [];
     }
 
-    return getBotPrompt(team).choices;
+    return getAdminChoices(team);
   }, [team]);
   const fileHref = team.currentFileId
     ? `/api/admin/files/${team.currentFileId}${tokenQuery(adminToken)}`
@@ -413,6 +585,9 @@ function TeamCard({
   const adminDecisionTitle = getAdminDecisionTitle(team);
   const stageTitle = getTeamStageTitle(team);
   const nextAction = getTeamNextAction(team);
+  const canOverride =
+    Boolean(team.captainTelegramId) &&
+    ["awaiting-decision", "decision-selected"].includes(team.status);
 
   return (
     <article
@@ -471,17 +646,21 @@ function TeamCard({
         </button>
       </div>
 
-      {choices.length && team.status !== "ready" && team.status !== "completed" ? (
+      {Boolean(team.captainTelegramId) && choices.length ? (
         <div className="mt-3 rounded-lg bg-slate-50 p-3">
           <div className="mb-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-500">
             {adminDecisionTitle}
           </div>
-          <div className="grid gap-2">
+          <div className="choice-grid">
             {choices.map((choice) => (
               <button
                 key={choice.id}
-                className="force-button"
-                disabled={busy}
+                className={
+                  choice.id === team.selectedChoiceId
+                    ? "choice-tile choice-tile-selected"
+                    : "choice-tile"
+                }
+                disabled={busy || !canOverride || choice.id === team.selectedChoiceId}
                 onClick={() =>
                   onAction({ type: "force", teamId: team.id, choiceId: choice.id })
                 }
@@ -540,6 +719,14 @@ function StatusPill({ status }: { status: TeamState["status"] }) {
       {statusLabels[status]}
     </span>
   );
+}
+
+function getAdminChoices(team: TeamState): Choice[] {
+  if (team.color === "blue" && team.currentStageIndex === 1 && team.selectedChoiceId) {
+    return getScenarioStage(team, team.currentStageIndex).choices;
+  }
+
+  return getBotPrompt(team).choices;
 }
 
 function getAdminDecisionTitle(team: TeamState) {
@@ -626,11 +813,17 @@ function getDashboardNextAction(snapshot: GameSnapshot) {
     return "можно скачать файлы и анализировать решения";
   }
 
-  const waitingDecision = snapshot.teams.filter(
+  const activeTeams = snapshot.teams.filter((team) => team.captainTelegramId);
+
+  if (!activeTeams.length) {
+    return "ждём, пока капитаны зайдут в бота через /start";
+  }
+
+  const waitingDecision = activeTeams.filter(
     (team) => team.status === "awaiting-decision" || team.status === "decision-selected",
   ).length;
-  const waitingFiles = snapshot.teams.filter((team) => team.status === "awaiting-file").length;
-  const ready = snapshot.teams.filter((team) => team.status === "ready").length;
+  const waitingFiles = activeTeams.filter((team) => team.status === "awaiting-file").length;
+  const ready = activeTeams.filter((team) => team.status === "ready").length;
 
   if (waitingDecision > 0) {
     return `ждём решения: ${waitingDecision}; Excel: ${waitingFiles}; готово: ${ready}`;
@@ -775,6 +968,52 @@ function yesNoLabel(value: unknown) {
   }
 
   return "—";
+}
+
+function groupFileArchive(files: FileArchiveItem[]) {
+  const groups = new Map<
+    string,
+    {
+      sessionId: string;
+      status: FileArchiveItem["sessionStatus"];
+      startedAt: string;
+      completedAt?: string;
+      files: FileArchiveItem[];
+    }
+  >();
+
+  for (const file of files) {
+    const existingGroup = groups.get(file.sessionId);
+
+    if (existingGroup) {
+      existingGroup.files.push(file);
+    } else {
+      groups.set(file.sessionId, {
+        sessionId: file.sessionId,
+        status: file.sessionStatus,
+        startedAt: file.sessionStartedAt,
+        completedAt: file.sessionCompletedAt,
+        files: [file],
+      });
+    }
+  }
+
+  return [...groups.values()].sort(
+    (first, second) =>
+      new Date(second.startedAt).getTime() - new Date(first.startedAt).getTime(),
+  );
+}
+
+function sessionStatusLabel(status: FileArchiveItem["sessionStatus"]) {
+  if (status === "running") {
+    return "идёт сейчас";
+  }
+
+  if (status === "waiting") {
+    return "ожидает старта";
+  }
+
+  return "завершена";
 }
 
 function gameStatus(snapshot: GameSnapshot) {

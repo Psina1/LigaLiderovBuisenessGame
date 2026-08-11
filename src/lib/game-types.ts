@@ -101,6 +101,23 @@ export type GameSnapshot = {
   source: "supabase" | "mock";
 };
 
+export type FileArchiveItem = {
+  id: string;
+  sessionId: string;
+  sessionStatus: GameStatus;
+  sessionStartedAt: string;
+  sessionCompletedAt?: string;
+  teamId: string;
+  teamName: string;
+  teamNumber: number;
+  teamColor: TeamColor;
+  captainName?: string;
+  captainTelegramId?: string;
+  stageIndex: number;
+  fileName: string;
+  receivedAt: string;
+};
+
 export type BotPrompt = {
   stage: ScenarioStage;
   text: string;
