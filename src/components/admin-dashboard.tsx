@@ -12,7 +12,7 @@ import {
   Send,
   Users,
 } from "lucide-react";
-import type { GameSnapshot, TeamColor, TeamState } from "@/lib/game-types";
+import type { AuditEvent, GameSnapshot, TeamColor, TeamState } from "@/lib/game-types";
 import { getBotPrompt, getScenarioStage } from "@/lib/scenario";
 
 type AdminDashboardProps = {
@@ -48,6 +48,10 @@ export function AdminDashboard({
   const readyCount = snapshot.teams.filter((team) => team.status === "ready").length;
   const connectedCount = snapshot.teams.filter((team) => team.captainTelegramId).length;
   const secondsLeft = getSecondsLeft(snapshot.game.deadlineAt, snapshot.serverNow);
+  const teamsById = useMemo(
+    () => new Map(snapshot.teams.map((team) => [team.id, team])),
+    [snapshot.teams],
+  );
 
   const refresh = useCallback(async () => {
     const response = await fetch(`/api/dashboard${tokenQuery(adminToken)}`, {
@@ -187,7 +191,11 @@ export function AdminDashboard({
             <button
               className="secondary-button"
               disabled={isGlobalActionPending}
-              onClick={() => action({ type: "reset" })}
+              onClick={() => {
+                if (window.confirm("Сбросить текущую игру и освободить команды?")) {
+                  action({ type: "reset" });
+                }
+              }}
             >
               <RotateCcw className="h-4 w-4" />
               Сбросить
@@ -243,7 +251,7 @@ export function AdminDashboard({
             <ClipboardList className="h-4 w-4" />
             Пульт организатора
           </div>
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-2">
             <AdminHint
               title="Текущий этап"
               value={getDashboardStageTitle(snapshot)}
@@ -251,10 +259,6 @@ export function AdminDashboard({
             <AdminHint
               title="Что делать сейчас"
               value={getDashboardNextAction(snapshot)}
-            />
-            <AdminHint
-              title="Логика игры"
-              value="Команды принимают управленческое решение, подтверждают его и загружают бюджет."
             />
           </div>
         </section>
@@ -285,16 +289,25 @@ export function AdminDashboard({
           </div>
           <div className="grid gap-2 text-sm">
             {snapshot.audit.length ? (
-              snapshot.audit.slice(0, 12).map((event) => (
-                <div
-                  key={event.id}
-                  className="grid gap-2 rounded-md border border-slate-100 bg-slate-50 px-3 py-2 md:grid-cols-[120px_120px_1fr]"
-                >
-                  <span className="text-slate-500">{formatDate(event.at)}</span>
-                  <span className="font-semibold">{event.teamId ?? event.actor}</span>
-                  <span>{event.action}</span>
-                </div>
-              ))
+              snapshot.audit.slice(0, 12).map((event) => {
+                const audit = formatAuditEvent(event, teamsById);
+
+                return (
+                  <div
+                    key={event.id}
+                    className="grid gap-2 rounded-md border border-slate-100 bg-slate-50 px-3 py-2 md:grid-cols-[120px_150px_1fr]"
+                  >
+                    <span className="text-slate-500">{formatDate(event.at)}</span>
+                    <span className="font-semibold">{audit.subject}</span>
+                    <span>
+                      <span className="font-semibold">{audit.title}</span>
+                      {audit.detail ? (
+                        <span className="text-slate-600"> — {audit.detail}</span>
+                      ) : null}
+                    </span>
+                  </div>
+                );
+              })
             ) : (
               <div className="rounded-md border border-dashed border-slate-200 px-3 py-6 text-center text-slate-500">
                 Событий пока нет.
@@ -628,6 +641,140 @@ function getDashboardNextAction(snapshot: GameSnapshot) {
   }
 
   return "все готовы — можно завершать этап и открывать следующий";
+}
+
+function formatAuditEvent(
+  event: AuditEvent,
+  teamsById: Map<string, TeamState>,
+) {
+  const team = event.teamId ? teamsById.get(event.teamId) : undefined;
+  const subject = team?.name ?? actorLabel(event.actor);
+
+  if (event.action === "stage.opened") {
+    return {
+      subject: "Организатор",
+      title: "Открыл этап",
+      detail: formatStageDetail(event.details?.stageIndex),
+    };
+  }
+
+  if (event.action === "game.completed") {
+    return {
+      subject: "Организатор",
+      title: "Завершил игру",
+      detail: "",
+    };
+  }
+
+  if (event.action === "game.reset") {
+    return {
+      subject: "Организатор",
+      title: "Сбросил игру",
+      detail: "команды освобождены, создана новая сессия",
+    };
+  }
+
+  if (event.action === "captain.bound" || event.action === "captain.auto_bound") {
+    return {
+      subject,
+      title: "Капитан подключился",
+      detail: "команда занята",
+    };
+  }
+
+  if (event.action === "decision.selected") {
+    return {
+      subject,
+      title: event.actor === "organizer" ? "Организатор выбрал решение" : "Капитан выбрал решение",
+      detail: readTextDetail(event.details?.choiceLabel ?? event.details?.choiceId),
+    };
+  }
+
+  if (event.action === "blue_q2.part_answered") {
+    return {
+      subject,
+      title: event.actor === "organizer" ? "Организатор ответил на Q2" : "Капитан ответил на Q2",
+      detail: `${blueQ2PartLabel(event.details?.part)}: ${yesNoLabel(event.details?.value)}`,
+    };
+  }
+
+  if (event.action === "decision.confirmed") {
+    return {
+      subject,
+      title: event.actor === "organizer" ? "Организатор подтвердил решение" : "Капитан подтвердил решение",
+      detail: readTextDetail(event.details?.choiceLabel ?? event.details?.choiceId),
+    };
+  }
+
+  if (event.action === "decision.forced") {
+    return {
+      subject,
+      title: "Организатор закрыл команду вручную",
+      detail: readTextDetail(event.details?.choiceLabel ?? event.details?.choiceId),
+    };
+  }
+
+  if (event.action === "file.uploaded") {
+    return {
+      subject,
+      title: "Excel-файл загружен",
+      detail: readTextDetail(event.details?.fileName),
+    };
+  }
+
+  return {
+    subject,
+    title: event.action,
+    detail: "",
+  };
+}
+
+function actorLabel(actor: AuditEvent["actor"]) {
+  if (actor === "captain") {
+    return "Капитан";
+  }
+
+  if (actor === "organizer") {
+    return "Организатор";
+  }
+
+  return "Система";
+}
+
+function formatStageDetail(stageIndex: unknown) {
+  return typeof stageIndex === "number" ? `этап ${stageIndex + 1}` : "";
+}
+
+function readTextDetail(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function blueQ2PartLabel(part: unknown) {
+  if (part === "hire") {
+    return "найм 2 СК";
+  }
+
+  if (part === "pr") {
+    return "PR";
+  }
+
+  if (part === "bonus") {
+    return "аванс бонуса";
+  }
+
+  return "вопрос";
+}
+
+function yesNoLabel(value: unknown) {
+  if (value === "yes" || value === true) {
+    return "да";
+  }
+
+  if (value === "no" || value === false) {
+    return "нет";
+  }
+
+  return "—";
 }
 
 function gameStatus(snapshot: GameSnapshot) {

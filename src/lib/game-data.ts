@@ -535,6 +535,7 @@ export async function selectChoice(
 
   await addEvent(source === "captain" ? "captain" : "organizer", "decision.selected", teamId, {
     choiceId,
+    choiceLabel,
   });
 
   return { choiceId, choiceLabel };
@@ -584,6 +585,7 @@ export async function answerBlueQ2Question(
 
     await addEvent(source === "captain" ? "captain" : "organizer", "decision.selected", teamId, {
       choiceId,
+      choiceLabel,
     });
     return { complete: true as const, choiceId, choiceLabel };
   }
@@ -658,6 +660,7 @@ export async function confirmChoice(teamId: string) {
     teamId,
     {
       choiceId: team.selectedChoiceId,
+      choiceLabel: team.selectedChoiceLabel,
     },
   );
 
@@ -740,7 +743,10 @@ export async function forceResolve(teamId: string, choiceId: string) {
     .eq("team_id", teamId)
     .eq("stage_index", session.current_stage_index);
 
-  await addEvent("organizer", "decision.forced", teamId, { choiceId });
+  await addEvent("organizer", "decision.forced", teamId, {
+    choiceId,
+    choiceLabel: (await getTeam(teamId)).selectedChoiceLabel,
+  });
 }
 
 export async function setDelivery(
