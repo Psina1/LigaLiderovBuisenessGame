@@ -78,6 +78,7 @@ async function handleCallbackQuery(callbackQuery: TelegramCallbackQuery) {
   }
 
   if (data.startsWith("join:")) {
+    await answerCallbackQuery(callbackQuery.id);
     await registerCaptainFromCallback(callbackQuery, chatId);
     return { ok: true };
   }
@@ -92,21 +93,21 @@ async function handleCallbackQuery(callbackQuery: TelegramCallbackQuery) {
 
   if (data.startsWith("blueq2:")) {
     await handleCallbackAction(callbackQuery, chatId, () =>
-      handleBlueQ2Answer(callbackQuery, chatId, team, data),
+      handleBlueQ2Answer(chatId, team, data),
     );
     return { ok: true };
   }
 
   if (data.startsWith("pick:")) {
     await handleCallbackAction(callbackQuery, chatId, () =>
-      handleChoice(callbackQuery, chatId, team, data),
+      handleChoice(chatId, team, data),
     );
     return { ok: true };
   }
 
   if (data === "confirm") {
     await handleCallbackAction(callbackQuery, chatId, () =>
-      handleChoiceConfirmation(callbackQuery, chatId, team),
+      handleChoiceConfirmation(chatId, team),
     );
     return { ok: true };
   }
@@ -121,6 +122,7 @@ async function handleCallbackAction(
   action: () => Promise<void>,
 ) {
   try {
+    await answerCallbackQuery(callbackQuery.id);
     await action();
   } catch (error) {
     const message =
@@ -128,7 +130,6 @@ async function handleCallbackAction(
         ? error.message
         : "Не удалось обработать кнопку. Напишите организатору.";
 
-    await answerCallbackQuery(callbackQuery.id, message.slice(0, 180));
     await sendTelegramMessage(
       chatId,
       `${escapeHtml(message)}\n\nЕсли этап уже закрыт организатором, ждите следующего сообщения от бота.`,
@@ -184,12 +185,6 @@ async function registerCaptainFromCallback(
     lastName: callbackQuery.from.last_name,
   });
 
-  await answerCallbackQuery(
-    callbackQuery.id,
-    result.status === "registered" || result.status === "already_registered"
-      ? "Команда привязана"
-      : "Свободных команд нет",
-  );
   await respondToRegistrationResult(chatId, result);
 }
 
@@ -234,7 +229,6 @@ async function respondToRegistrationResult(
 }
 
 async function handleChoice(
-  callbackQuery: TelegramCallbackQuery,
   chatId: number,
   team: TeamState,
   callbackData: string,
@@ -243,23 +237,20 @@ async function handleChoice(
   const stageIndex = Number(stageRaw);
 
   if (stageIndex !== team.currentStageIndex) {
-    await answerCallbackQuery(callbackQuery.id, "Эта карточка уже неактуальна");
+    await sendTelegramMessage(chatId, "Эта карточка уже неактуальна. Ждите актуальное сообщение от бота.");
     return;
   }
 
   const result = await selectChoice(team.id, choiceId);
-  await answerCallbackQuery(callbackQuery.id);
   await sendConfirmation(chatId, result.choiceLabel);
 }
 
 async function handleBlueQ2Answer(
-  callbackQuery: TelegramCallbackQuery,
   chatId: number,
   team: TeamState,
   callbackData: string,
 ) {
   const result = await answerBlueQ2Question(team.id, callbackData);
-  await answerCallbackQuery(callbackQuery.id);
 
   if (result.complete) {
     await sendConfirmation(chatId, result.choiceLabel);
@@ -270,12 +261,10 @@ async function handleBlueQ2Answer(
 }
 
 async function handleChoiceConfirmation(
-  callbackQuery: TelegramCallbackQuery,
   chatId: number,
   team: TeamState,
 ) {
   const result = await confirmChoice(team.id);
-  await answerCallbackQuery(callbackQuery.id, "Решение подтверждено");
 
   if (result.status === "awaiting-file") {
     await sendTelegramMessage(
