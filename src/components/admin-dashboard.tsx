@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import {
   AlertCircle,
   Bot,
@@ -47,7 +47,7 @@ export function AdminDashboard({
   const connectedCount = snapshot.teams.filter((team) => team.captainTelegramId).length;
   const secondsLeft = getSecondsLeft(snapshot.game.deadlineAt, snapshot.serverNow);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     const response = await fetch(`/api/dashboard${tokenQuery(adminToken)}`, {
       cache: "no-store",
       headers: adminToken ? { "x-admin-token": adminToken } : undefined,
@@ -60,7 +60,32 @@ export function AdminDashboard({
 
     setSnapshot(data);
     setError(data.loadError);
-  }
+  }, [adminToken]);
+
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void refresh().catch((refreshError) => {
+          setError(refreshError instanceof Error ? refreshError.message : "Не удалось обновить панель");
+        });
+      }
+    }, 2500);
+
+    function refreshWhenVisible() {
+      if (document.visibilityState === "visible") {
+        void refresh().catch((refreshError) => {
+          setError(refreshError instanceof Error ? refreshError.message : "Не удалось обновить панель");
+        });
+      }
+    }
+
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+
+    return () => {
+      window.clearInterval(intervalId);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [refresh]);
 
   function action(payload: Record<string, unknown>) {
     startTransition(async () => {
@@ -114,7 +139,17 @@ export function AdminDashboard({
             <button
               className="icon-button"
               disabled={isPending}
-              onClick={() => startTransition(refresh)}
+              onClick={() =>
+                startTransition(() => {
+                  void refresh().catch((refreshError) => {
+                    setError(
+                      refreshError instanceof Error
+                        ? refreshError.message
+                        : "Не удалось обновить панель",
+                    );
+                  });
+                })
+              }
               title="Обновить"
             >
               <RefreshCw className="h-4 w-4" />
