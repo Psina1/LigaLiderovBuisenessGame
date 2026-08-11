@@ -6,13 +6,14 @@ import {
   Bot,
   CheckCircle2,
   Clock,
+  ClipboardList,
   RefreshCw,
   RotateCcw,
   Send,
   Users,
 } from "lucide-react";
 import type { GameSnapshot, TeamColor, TeamState } from "@/lib/game-types";
-import { getBotPrompt } from "@/lib/scenario";
+import { getBotPrompt, getScenarioStage } from "@/lib/scenario";
 
 type AdminDashboardProps = {
   initialData: GameSnapshot;
@@ -237,6 +238,27 @@ export function AdminDashboard({
           </div>
         ) : null}
 
+        <section className="mb-5 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-3 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.12em] text-slate-500">
+            <ClipboardList className="h-4 w-4" />
+            Пульт организатора
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <AdminHint
+              title="Текущий этап"
+              value={getDashboardStageTitle(snapshot)}
+            />
+            <AdminHint
+              title="Что делать сейчас"
+              value={getDashboardNextAction(snapshot)}
+            />
+            <AdminHint
+              title="Логика игры"
+              value="Команды принимают управленческое решение, подтверждают его и загружают бюджет."
+            />
+          </div>
+        </section>
+
         <div className="grid gap-5 lg:grid-cols-2">
           <TeamColumn
             color="red"
@@ -297,6 +319,17 @@ function Metric({ title, value }: { title: string; value: string }) {
         {title}
       </div>
       <div className="mt-2 text-lg font-black">{value}</div>
+    </div>
+  );
+}
+
+function AdminHint({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+      <div className="text-[11px] font-black uppercase tracking-[0.1em] text-slate-500">
+        {title}
+      </div>
+      <div className="mt-1 text-sm font-semibold leading-snug">{value}</div>
     </div>
   );
 }
@@ -365,6 +398,8 @@ function TeamCard({
     ? `/api/admin/files/${team.currentFileId}${tokenQuery(adminToken)}`
     : undefined;
   const adminDecisionTitle = getAdminDecisionTitle(team);
+  const stageTitle = getTeamStageTitle(team);
+  const nextAction = getTeamNextAction(team);
 
   return (
     <article
@@ -378,8 +413,14 @@ function TeamCard({
           <div className="mt-1 text-xs font-semibold text-slate-500">
             {statusLabels[team.status]}
           </div>
+          <div className="mt-1 text-xs font-bold text-slate-700">{stageTitle}</div>
         </div>
         <StatusPill status={team.status} />
+      </div>
+
+      <div className="mb-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm">
+        <span className="font-black text-slate-500">Сейчас: </span>
+        <span className="font-semibold">{nextAction}</span>
       </div>
 
       <dl className="grid grid-cols-2 overflow-hidden rounded-lg border border-slate-200 text-sm">
@@ -506,6 +547,87 @@ function getAdminDecisionTitle(team: TeamState) {
   }
 
   return "Решение организатора";
+}
+
+function getTeamStageTitle(team: TeamState) {
+  if (team.currentStageIndex < 0) {
+    return "Этап ещё не открыт";
+  }
+
+  try {
+    const stage = getScenarioStage(team, team.currentStageIndex);
+    return `${team.currentStageIndex + 1}. ${stage.title}`;
+  } catch {
+    return `Этап ${team.currentStageIndex + 1}`;
+  }
+}
+
+function getTeamNextAction(team: TeamState) {
+  if (!team.captainTelegramId) {
+    return "капитан ещё не подключился через /start";
+  }
+
+  if (team.status === "waiting") {
+    return "ждёт старта игры от организатора";
+  }
+
+  if (team.status === "awaiting-decision") {
+    return team.color === "blue" && team.currentStageIndex === 1
+      ? getAdminDecisionTitle(team).replace("Q2: ", "капитан отвечает: ")
+      : "капитан выбирает вариант в Telegram";
+  }
+
+  if (team.status === "decision-selected") {
+    return "капитан выбрал вариант, но ещё не нажал «Подтвердить»";
+  }
+
+  if (team.status === "awaiting-file") {
+    return "решение подтверждено, ждём Excel-файл бюджета";
+  }
+
+  if (team.status === "ready") {
+    return "команда готова к следующему этапу";
+  }
+
+  return "игра для команды завершена";
+}
+
+function getDashboardStageTitle(snapshot: GameSnapshot) {
+  if (snapshot.game.status === "waiting") {
+    return "игра ещё не начата";
+  }
+
+  if (snapshot.game.status === "completed") {
+    return "игра завершена";
+  }
+
+  return `этап ${snapshot.game.currentStageIndex + 1} из 4`;
+}
+
+function getDashboardNextAction(snapshot: GameSnapshot) {
+  if (snapshot.game.status === "waiting") {
+    return "нажать «Открыть первый этап», когда капитаны подключились";
+  }
+
+  if (snapshot.game.status === "completed") {
+    return "можно скачать файлы и анализировать решения";
+  }
+
+  const waitingDecision = snapshot.teams.filter(
+    (team) => team.status === "awaiting-decision" || team.status === "decision-selected",
+  ).length;
+  const waitingFiles = snapshot.teams.filter((team) => team.status === "awaiting-file").length;
+  const ready = snapshot.teams.filter((team) => team.status === "ready").length;
+
+  if (waitingDecision > 0) {
+    return `ждём решения: ${waitingDecision}; Excel: ${waitingFiles}; готово: ${ready}`;
+  }
+
+  if (waitingFiles > 0) {
+    return `решения есть, ждём Excel-файлы: ${waitingFiles}; готово: ${ready}`;
+  }
+
+  return "все готовы — можно завершать этап и открывать следующий";
 }
 
 function gameStatus(snapshot: GameSnapshot) {

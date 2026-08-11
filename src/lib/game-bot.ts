@@ -91,22 +91,49 @@ async function handleCallbackQuery(callbackQuery: TelegramCallbackQuery) {
   }
 
   if (data.startsWith("blueq2:")) {
-    await handleBlueQ2Answer(callbackQuery, chatId, team, data);
+    await handleCallbackAction(callbackQuery, chatId, () =>
+      handleBlueQ2Answer(callbackQuery, chatId, team, data),
+    );
     return { ok: true };
   }
 
   if (data.startsWith("pick:")) {
-    await handleChoice(callbackQuery, chatId, team, data);
+    await handleCallbackAction(callbackQuery, chatId, () =>
+      handleChoice(callbackQuery, chatId, team, data),
+    );
     return { ok: true };
   }
 
   if (data === "confirm") {
-    await handleChoiceConfirmation(callbackQuery, chatId, team);
+    await handleCallbackAction(callbackQuery, chatId, () =>
+      handleChoiceConfirmation(callbackQuery, chatId, team),
+    );
     return { ok: true };
   }
 
   await answerCallbackQuery(callbackQuery.id, "Неизвестная команда");
   return { ok: true };
+}
+
+async function handleCallbackAction(
+  callbackQuery: TelegramCallbackQuery,
+  chatId: number,
+  action: () => Promise<void>,
+) {
+  try {
+    await action();
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : "Не удалось обработать кнопку. Напишите организатору.";
+
+    await answerCallbackQuery(callbackQuery.id, message.slice(0, 180));
+    await sendTelegramMessage(
+      chatId,
+      `${escapeHtml(message)}\n\nЕсли этап уже закрыт организатором, ждите следующего сообщения от бота.`,
+    );
+  }
 }
 
 async function registerCaptain(message: TelegramMessage) {
