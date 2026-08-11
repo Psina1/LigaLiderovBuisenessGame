@@ -418,8 +418,10 @@ export async function bindCaptain(teamId: string, captain: CaptainInput) {
   return { status: "registered" as const, team: await getTeam(teamId) };
 }
 
-export async function autoAssignCaptain(captain: CaptainInput) {
-  const supabase = getSupabaseServiceClient();
+export async function autoAssignCaptain(
+  captain: CaptainInput,
+  requestedTeamId?: string,
+) {
   const snapshot = await getSnapshot();
   const captainName = formatCaptainName(captain);
   const existingTeam = snapshot.teams.find(
@@ -432,42 +434,104 @@ export async function autoAssignCaptain(captain: CaptainInput) {
     return { status: "already_registered" as const, team: existingTeam };
   }
 
+  if (requestedTeamId) {
+    const requestedTeam = snapshot.teams.find((team) => team.id === requestedTeamId);
+
+    if (!requestedTeam) {
+      return { status: "missing" as const, team: null };
+    }
+
+    if (requestedTeam.captainTelegramId || requestedTeam.captainChatId) {
+      return { status: "already_taken" as const, team: requestedTeam };
+    }
+
+    return assignCaptainToTeam(requestedTeam.id, captain, captainName);
+  }
+
+  if (snapshot.game.status !== "waiting") {
+    return { status: "registration_closed" as const, team: null };
+  }
+
   const freeTeams = snapshot.teams
     .filter((team) => !team.captainTelegramId && !team.captainChatId)
     .sort((first, second) => first.number - second.number);
 
   for (const team of freeTeams) {
-    const { data, error } = await supabase
-      .from("teams")
-      .update({
-        captain_telegram_id: captain.telegramId,
-        captain_chat_id: captain.chatId,
-        captain_username: captain.username ?? null,
-        captain_name: captainName,
-        captain_bound_at: new Date().toISOString(),
-      })
-      .eq("id", team.id)
-      .is("captain_telegram_id", null)
-      .is("captain_chat_id", null)
-      .select("id")
-      .maybeSingle();
+    const result = await assignCaptainToTeam(team.id, captain, captainName);
 
-    if (error) {
-      throw error;
-    }
-
-    if (data) {
-      await addEvent("captain", "captain.auto_bound", team.id, {
-        telegramId: captain.telegramId,
-        username: captain.username,
-        captainName,
-      });
-
-      return { status: "registered" as const, team: await getTeam(team.id) };
+    if (result.status === "registered") {
+      return result;
     }
   }
 
   return { status: "full" as const, team: null };
+}
+
+export async function releaseCaptain(teamId: string) {
+  const supabase = getSupabaseServiceClient();
+  const team = await getTeam(teamId);
+
+  if (!team.captainTelegramId) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from("teams")
+    .update({
+      captain_telegram_id: null,
+      captain_chat_id: null,
+      captain_username: null,
+      captain_name: null,
+      captain_bound_at: null,
+    })
+    .eq("id", teamId);
+
+  if (error) {
+    throw error;
+  }
+
+  await addEvent("organizer", "captain.released", teamId, {
+    captainName: team.captainName,
+    telegramId: team.captainTelegramId,
+  });
+}
+
+async function assignCaptainToTeam(
+  teamId: string,
+  captain: CaptainInput,
+  captainName: string,
+) {
+  const supabase = getSupabaseServiceClient();
+  const { data, error } = await supabase
+    .from("teams")
+    .update({
+      captain_telegram_id: captain.telegramId,
+      captain_chat_id: captain.chatId,
+      captain_username: captain.username ?? null,
+      captain_name: captainName,
+      captain_bound_at: new Date().toISOString(),
+    })
+    .eq("id", teamId)
+    .is("captain_telegram_id", null)
+    .is("captain_chat_id", null)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    return { status: "already_taken" as const, team: await getTeam(teamId) };
+  }
+
+  await addEvent("captain", "captain.auto_bound", teamId, {
+    telegramId: captain.telegramId,
+    username: captain.username,
+    captainName,
+  });
+
+  return { status: "registered" as const, team: await getTeam(teamId) };
 }
 
 export async function markUpdateProcessed(updateId: number) {

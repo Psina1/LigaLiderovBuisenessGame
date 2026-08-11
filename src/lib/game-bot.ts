@@ -51,7 +51,7 @@ async function handleMessage(message: TelegramMessage) {
   }
 
   if (message.text?.startsWith("/start")) {
-    await registerCaptain(message);
+    await registerCaptain(message, parseStartPayload(message.text));
     return { ok: true };
   }
 
@@ -136,18 +136,38 @@ async function handleCallbackAction(
   }
 }
 
-async function registerCaptain(message: TelegramMessage) {
+function parseStartPayload(text: string) {
+  const payload = text.split(/\s+/)[1]?.trim();
+  return payload?.startsWith("team-") ? payload : undefined;
+}
+
+function registrationErrorText(status: string) {
+  if (status === "registration_closed") {
+    return "Игра уже началась. Чтобы заменить капитана, попросите организатора освободить нужную команду и дать код вида /start team-7.";
+  }
+
+  if (status === "missing") {
+    return "Такой команды нет. Проверьте код или напишите организатору.";
+  }
+
+  return "Свободных команд нет. Напишите организатору.";
+}
+
+async function registerCaptain(message: TelegramMessage, requestedTeamId?: string) {
   if (!message.from) {
     return;
   }
 
-  const result = await autoAssignCaptain({
-    telegramId: message.from.id,
-    chatId: message.chat.id,
-    username: message.from.username,
-    firstName: message.from.first_name,
-    lastName: message.from.last_name,
-  });
+  const result = await autoAssignCaptain(
+    {
+      telegramId: message.from.id,
+      chatId: message.chat.id,
+      username: message.from.username,
+      firstName: message.from.first_name,
+      lastName: message.from.last_name,
+    },
+    requestedTeamId,
+  );
 
   await respondToRegistrationResult(message.chat.id, result);
 }
@@ -178,7 +198,15 @@ async function respondToRegistrationResult(
   result: Awaited<ReturnType<typeof autoAssignCaptain>>,
 ) {
   if (result.status === "full" || !result.team) {
-    await sendTelegramMessage(chatId, "Свободных команд нет. Напишите организатору.");
+    await sendTelegramMessage(chatId, registrationErrorText(result.status));
+    return;
+  }
+
+  if (result.status === "already_taken") {
+    await sendTelegramMessage(
+      chatId,
+      `${result.team.name} уже занята другим капитаном. Если это ошибка, попросите организатора освободить слот.`,
+    );
     return;
   }
 

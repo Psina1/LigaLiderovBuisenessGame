@@ -12,6 +12,7 @@ import {
   RefreshCw,
   RotateCcw,
   Send,
+  UserX,
   Users,
 } from "lucide-react";
 import type {
@@ -644,6 +645,27 @@ function TeamCard({
           <Send className="h-3.5 w-3.5" />
           Повторить этап
         </button>
+        <button
+          className="small-button"
+          disabled={busy || !team.captainTelegramId}
+          onClick={() => {
+            if (
+              window.confirm(
+                `Освободить капитана ${team.name}? Новый капитан сможет зайти кодом /start ${team.id}.`,
+              )
+            ) {
+              onAction({ type: "release-captain", teamId: team.id });
+            }
+          }}
+        >
+          <UserX className="h-3.5 w-3.5" />
+          Освободить капитана
+        </button>
+        {!team.captainTelegramId ? (
+          <span className="inline-flex items-center rounded-md bg-slate-100 px-2.5 py-1.5 text-xs font-bold text-slate-600">
+            код: /start {team.id}
+          </span>
+        ) : null}
       </div>
 
       {Boolean(team.captainTelegramId) && choices.length ? (
@@ -872,6 +894,14 @@ function formatAuditEvent(
       subject,
       title: "Капитан подключился",
       detail: "команда занята",
+    };
+  }
+
+  if (event.action === "captain.released") {
+    return {
+      subject,
+      title: "Капитан освобождён",
+      detail: readTextDetail(event.details?.captainName),
     };
   }
 

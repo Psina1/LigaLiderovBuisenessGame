@@ -4,6 +4,7 @@ import {
   advanceGame,
   forceResolve,
   getSnapshot,
+  releaseCaptain,
   resetGame,
   setDelivery,
   startGame,
@@ -22,6 +23,7 @@ const actionSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("reset") }),
   z.object({ type: z.literal("force"), teamId: z.string(), choiceId: z.string() }),
+  z.object({ type: z.literal("release-captain"), teamId: z.string() }),
   z.object({ type: z.literal("resend"), teamId: z.string().optional() }),
 ]);
 
@@ -62,6 +64,9 @@ export async function POST(request: Request) {
         break;
       case "force":
         await forceResolve(action.teamId, action.choiceId);
+        break;
+      case "release-captain":
+        await releaseCaptain(action.teamId);
         break;
       case "resend":
         await deliver(action.teamId);
