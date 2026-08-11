@@ -8,8 +8,8 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: "Geist", "Geist Fallback", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", "Geist Mono Fallback", ui-monospace, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -22,5 +22,102 @@
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.primary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.5rem;
+  background: #172b63;
+  padding: 0.7rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 800;
+  color: white;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.primary-button:hover:not(:disabled) {
+  background: #0f1f4e;
+  transform: translateY(-1px);
+}
+
+.secondary-button,
+.icon-button,
+.small-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: 0.5rem;
+  border: 1px solid #e2e8f0;
+  background: white;
+  padding: 0.65rem 0.8rem;
+  font-size: 0.8rem;
+  font-weight: 800;
+  color: #1e293b;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 0.04);
+}
+
+.icon-button {
+  height: 2.5rem;
+  width: 2.5rem;
+  padding: 0;
+}
+
+.small-button {
+  padding: 0.5rem 0.7rem;
+  font-size: 0.75rem;
+}
+
+.force-button {
+  border-radius: 0.45rem;
+  border: 1px solid #e2e8f0;
+  background: white;
+  padding: 0.55rem 0.7rem;
+  text-align: left;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #334155;
+}
+
+.force-button:hover:not(:disabled),
+.secondary-button:hover:not(:disabled),
+.icon-button:hover:not(:disabled),
+.small-button:hover:not(:disabled) {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
+.info-cell,
+.complete-cell {
+  min-width: 0;
+  border-top: 1px solid #e2e8f0;
+  padding: 0.75rem;
+}
+
+.info-cell:nth-child(1),
+.info-cell:nth-child(2),
+.complete-cell:nth-child(1),
+.complete-cell:nth-child(2) {
+  border-top: 0;
+}
+
+.info-cell:nth-child(2n),
+.complete-cell:nth-child(2n) {
+  border-left: 1px solid #e2e8f0;
+}
+
+.complete-cell {
+  background: #f0fdf4;
 }
