@@ -66,6 +66,7 @@ export type TeamState = {
   selectedChoiceLabel?: string;
   selectedSource?: DecisionSource;
   decisionConfirmedAt?: string;
+  currentFileId?: string;
   currentFileName?: string;
   currentFileUrl?: string;
   lastActivityAt?: string;

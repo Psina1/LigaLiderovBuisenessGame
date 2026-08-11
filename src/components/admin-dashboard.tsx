@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   Bot,
@@ -41,7 +41,8 @@ export function AdminDashboard({
   const [stageDurationMinutes, setStageDurationMinutes] = useState(
     Math.max(1, initialData.game.durationSeconds / 60),
   );
-  const [isPending, startTransition] = useTransition();
+  const [isGlobalActionPending, setIsGlobalActionPending] = useState(false);
+  const [pendingTeamIds, setPendingTeamIds] = useState<Set<string>>(new Set());
 
   const readyCount = snapshot.teams.filter((team) => team.status === "ready").length;
   const connectedCount = snapshot.teams.filter((team) => team.captainTelegramId).length;
@@ -87,35 +88,65 @@ export function AdminDashboard({
     };
   }, [refresh]);
 
-  function action(payload: Record<string, unknown>) {
-    startTransition(async () => {
-      try {
-        setError(undefined);
-        const response = await fetch(`/api/admin/action${tokenQuery(adminToken)}`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            ...(adminToken ? { "x-admin-token": adminToken } : {}),
-          },
-          body: JSON.stringify(payload),
-        });
-        const data = (await response.json()) as GameSnapshot & {
-          error?: string;
-          blockers?: string[];
-        };
-
-        if (!response.ok) {
-          const blockers = data.blockers?.length
-            ? ` Блокеры: ${data.blockers.join(", ")}.`
-            : "";
-          throw new Error(`${data.error ?? "Команда не выполнена"}.${blockers}`);
-        }
-
-        setSnapshot(data);
-      } catch (actionError) {
-        setError(actionError instanceof Error ? actionError.message : "Ошибка команды");
-      }
+  async function submitAction(payload: Record<string, unknown>) {
+    const response = await fetch(`/api/admin/action${tokenQuery(adminToken)}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...(adminToken ? { "x-admin-token": adminToken } : {}),
+      },
+      body: JSON.stringify(payload),
     });
+    const data = (await response.json()) as GameSnapshot & {
+      error?: string;
+      blockers?: string[];
+    };
+
+    if (!response.ok) {
+      const blockers = data.blockers?.length
+        ? ` Блокеры: ${data.blockers.join(", ")}.`
+        : "";
+      throw new Error(`${data.error ?? "Команда не выполнена"}.${blockers}`);
+    }
+
+    setSnapshot(data);
+  }
+
+  function setTeamPending(teamId: string, value: boolean) {
+    setPendingTeamIds((currentIds) => {
+      const nextIds = new Set(currentIds);
+
+      if (value) {
+        nextIds.add(teamId);
+      } else {
+        nextIds.delete(teamId);
+      }
+
+      return nextIds;
+    });
+  }
+
+  function action(payload: Record<string, unknown>) {
+    const teamId = typeof payload.teamId === "string" ? payload.teamId : undefined;
+
+    setError(undefined);
+    if (teamId) {
+      setTeamPending(teamId, true);
+    } else {
+      setIsGlobalActionPending(true);
+    }
+
+    void submitAction(payload)
+      .catch((actionError) => {
+        setError(actionError instanceof Error ? actionError.message : "Ошибка команды");
+      })
+      .finally(() => {
+        if (teamId) {
+          setTeamPending(teamId, false);
+        } else {
+          setIsGlobalActionPending(false);
+        }
+      });
   }
 
   return (
@@ -138,16 +169,14 @@ export function AdminDashboard({
           <div className="flex gap-2">
             <button
               className="icon-button"
-              disabled={isPending}
+              disabled={isGlobalActionPending}
               onClick={() =>
-                startTransition(() => {
-                  void refresh().catch((refreshError) => {
-                    setError(
-                      refreshError instanceof Error
-                        ? refreshError.message
-                        : "Не удалось обновить панель",
-                    );
-                  });
+                void refresh().catch((refreshError) => {
+                  setError(
+                    refreshError instanceof Error
+                      ? refreshError.message
+                      : "Не удалось обновить панель",
+                  );
                 })
               }
               title="Обновить"
@@ -156,7 +185,7 @@ export function AdminDashboard({
             </button>
             <button
               className="secondary-button"
-              disabled={isPending}
+              disabled={isGlobalActionPending}
               onClick={() => action({ type: "reset" })}
             >
               <RotateCcw className="h-4 w-4" />
@@ -185,7 +214,7 @@ export function AdminDashboard({
               />
               <button
                 className="primary-button flex-1"
-                disabled={isPending || !Number.isFinite(stageDurationMinutes)}
+                disabled={isGlobalActionPending || !Number.isFinite(stageDurationMinutes)}
                 onClick={() =>
                   action({
                     type: snapshot.game.status === "waiting" ? "start" : "advance",
@@ -212,13 +241,17 @@ export function AdminDashboard({
           <TeamColumn
             color="red"
             teams={snapshot.teams.filter((team) => team.color === "red")}
-            busy={isPending}
+            globalBusy={isGlobalActionPending}
+            pendingTeamIds={pendingTeamIds}
+            adminToken={adminToken}
             onAction={action}
           />
           <TeamColumn
             color="blue"
             teams={snapshot.teams.filter((team) => team.color === "blue")}
-            busy={isPending}
+            globalBusy={isGlobalActionPending}
+            pendingTeamIds={pendingTeamIds}
+            adminToken={adminToken}
             onAction={action}
           />
         </div>
@@ -271,12 +304,16 @@ function Metric({ title, value }: { title: string; value: string }) {
 function TeamColumn({
   color,
   teams,
-  busy,
+  globalBusy,
+  pendingTeamIds,
+  adminToken,
   onAction,
 }: {
   color: TeamColor;
   teams: TeamState[];
-  busy: boolean;
+  globalBusy: boolean;
+  pendingTeamIds: Set<string>;
+  adminToken: string;
   onAction: (payload: Record<string, unknown>) => void;
 }) {
   return (
@@ -293,7 +330,13 @@ function TeamColumn({
       </div>
       <div className="space-y-4">
         {teams.map((team) => (
-          <TeamCard key={team.id} team={team} busy={busy} onAction={onAction} />
+          <TeamCard
+            key={team.id}
+            team={team}
+            busy={globalBusy || pendingTeamIds.has(team.id)}
+            adminToken={adminToken}
+            onAction={onAction}
+          />
         ))}
       </div>
     </section>
@@ -303,10 +346,12 @@ function TeamColumn({
 function TeamCard({
   team,
   busy,
+  adminToken,
   onAction,
 }: {
   team: TeamState;
   busy: boolean;
+  adminToken: string;
   onAction: (payload: Record<string, unknown>) => void;
 }) {
   const choices = useMemo(() => {
@@ -314,8 +359,12 @@ function TeamCard({
       return [];
     }
 
-    return getBotPrompt(team).stage.choices;
+    return getBotPrompt(team).choices;
   }, [team]);
+  const fileHref = team.currentFileId
+    ? `/api/admin/files/${team.currentFileId}${tokenQuery(adminToken)}`
+    : undefined;
+  const adminDecisionTitle = getAdminDecisionTitle(team);
 
   return (
     <article
@@ -348,6 +397,7 @@ function TeamCard({
           complete={Boolean(team.currentFileName)}
           label="Файл"
           value={team.currentFileName ?? "—"}
+          href={fileHref}
         />
         <InfoCell
           complete={team.delivery.status === "sent"}
@@ -370,7 +420,7 @@ function TeamCard({
       {choices.length && team.status !== "ready" && team.status !== "completed" ? (
         <div className="mt-3 rounded-lg bg-slate-50 p-3">
           <div className="mb-2 text-xs font-bold uppercase tracking-[0.12em] text-slate-500">
-            Решение организатора
+            {adminDecisionTitle}
           </div>
           <div className="grid gap-2">
             {choices.map((choice) => (
@@ -396,17 +446,27 @@ function InfoCell({
   label,
   value,
   complete,
+  href,
 }: {
   label: string;
   value: string;
   complete: boolean;
+  href?: string;
 }) {
   return (
     <div className={complete ? "complete-cell" : "info-cell"}>
       <dt className="text-[11px] font-black uppercase tracking-[0.08em] text-slate-500">
         {label}
       </dt>
-      <dd className="mt-1 min-h-5 break-words font-bold">{value}</dd>
+      <dd className="mt-1 min-h-5 break-words font-bold">
+        {href ? (
+          <a className="text-blue-700 underline-offset-2 hover:underline" href={href}>
+            {value}
+          </a>
+        ) : (
+          value
+        )}
+      </dd>
     </div>
   );
 }
@@ -426,6 +486,26 @@ function StatusPill({ status }: { status: TeamState["status"] }) {
       {statusLabels[status]}
     </span>
   );
+}
+
+function getAdminDecisionTitle(team: TeamState) {
+  if (team.color !== "blue" || team.currentStageIndex !== 1) {
+    return "Решение организатора";
+  }
+
+  if (typeof team.blueQ2Draft?.hire !== "boolean") {
+    return "Q2: нанимаем 2 СК?";
+  }
+
+  if (typeof team.blueQ2Draft?.pr !== "boolean") {
+    return "Q2: делаем PR?";
+  }
+
+  if (typeof team.blueQ2Draft?.bonus !== "boolean") {
+    return "Q2: платим аванс бонуса?";
+  }
+
+  return "Решение организатора";
 }
 
 function gameStatus(snapshot: GameSnapshot) {

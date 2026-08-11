@@ -181,9 +181,10 @@ export async function getSnapshot(): Promise<GameSnapshot> {
     }
   }
 
-  const latestFileByTeam = new Map<string, { name: string; url: string }>();
+  const latestFileByTeam = new Map<string, { id: string; name: string; url: string }>();
 
   for (const file of (filesResult.data ?? []) as Array<{
+    id: string;
     team_id: string;
     file_name: string;
     storage_path: string | null;
@@ -191,6 +192,7 @@ export async function getSnapshot(): Promise<GameSnapshot> {
   }>) {
     if (!latestFileByTeam.has(file.team_id)) {
       latestFileByTeam.set(file.team_id, {
+        id: file.id,
         name: file.file_name,
         url: file.storage_path ?? `telegram-file:${file.telegram_file_id}`,
       });
@@ -286,6 +288,55 @@ export async function bindCaptain(teamId: string, captain: CaptainInput) {
   });
 
   return { status: "registered" as const, team: await getTeam(teamId) };
+}
+
+export async function autoAssignCaptain(captain: CaptainInput) {
+  const supabase = getSupabaseServiceClient();
+  const snapshot = await getSnapshot();
+  const existingTeam = snapshot.teams.find(
+    (team) =>
+      team.captainTelegramId === String(captain.telegramId) ||
+      team.captainChatId === String(captain.chatId),
+  );
+
+  if (existingTeam) {
+    return { status: "already_registered" as const, team: existingTeam };
+  }
+
+  const freeTeams = snapshot.teams
+    .filter((team) => !team.captainTelegramId && !team.captainChatId)
+    .sort((first, second) => first.number - second.number);
+
+  for (const team of freeTeams) {
+    const { data, error } = await supabase
+      .from("teams")
+      .update({
+        captain_telegram_id: captain.telegramId,
+        captain_chat_id: captain.chatId,
+        captain_username: captain.username ?? null,
+        captain_name: formatCaptainName(captain),
+        captain_bound_at: new Date().toISOString(),
+      })
+      .eq("id", team.id)
+      .is("captain_telegram_id", null)
+      .is("captain_chat_id", null)
+      .select("id")
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    if (data) {
+      await addEvent("captain", "captain.auto_bound", team.id, {
+        telegramId: captain.telegramId,
+      });
+
+      return { status: "registered" as const, team: await getTeam(team.id) };
+    }
+  }
+
+  return { status: "full" as const, team: null };
 }
 
 export async function markUpdateProcessed(updateId: number) {
@@ -489,7 +540,11 @@ export async function selectChoice(
   return { choiceId, choiceLabel };
 }
 
-export async function answerBlueQ2Question(teamId: string, callbackData: string) {
+export async function answerBlueQ2Question(
+  teamId: string,
+  callbackData: string,
+  source: DecisionSource = "captain",
+) {
   const [, part, value] = callbackData.split(":");
   const supabase = getSupabaseServiceClient();
   const session = await getOrCreateSession();
@@ -517,7 +572,7 @@ export async function answerBlueQ2Question(teamId: string, callbackData: string)
         status: "decision-selected",
         selected_choice_id: choiceId,
         selected_choice_label: choiceLabel,
-        selected_source: "captain",
+        selected_source: source,
       })
       .eq("session_id", session.id)
       .eq("team_id", teamId)
@@ -527,7 +582,9 @@ export async function answerBlueQ2Question(teamId: string, callbackData: string)
       throw error;
     }
 
-    await addEvent("captain", "decision.selected", teamId, { choiceId });
+    await addEvent(source === "captain" ? "captain" : "organizer", "decision.selected", teamId, {
+      choiceId,
+    });
     return { complete: true as const, choiceId, choiceLabel };
   }
 
@@ -542,7 +599,10 @@ export async function answerBlueQ2Question(teamId: string, callbackData: string)
     throw error;
   }
 
-  await addEvent("captain", "blue_q2.part_answered", teamId, { part, value });
+  await addEvent(source === "captain" ? "captain" : "organizer", "blue_q2.part_answered", teamId, {
+    part,
+    value,
+  });
   return { complete: false as const };
 }
 
@@ -592,9 +652,14 @@ export async function confirmChoice(teamId: string) {
     throw decisionError;
   }
 
-  await addEvent("captain", "decision.confirmed", teamId, {
-    choiceId: team.selectedChoiceId,
-  });
+  await addEvent(
+    team.selectedSource === "organizer_override" ? "organizer" : "captain",
+    "decision.confirmed",
+    teamId,
+    {
+      choiceId: team.selectedChoiceId,
+    },
+  );
 
   return { stage, status: nextStatus };
 }
@@ -648,7 +713,18 @@ export async function attachFile(teamId: string, file: TelegramFileInput) {
 }
 
 export async function forceResolve(teamId: string, choiceId: string) {
-  await selectChoice(teamId, choiceId, "organizer_override");
+  if (choiceId.startsWith("blueq2:")) {
+    const result = await answerBlueQ2Question(teamId, choiceId, "organizer_override");
+
+    if (!result.complete) {
+      return;
+    }
+
+    choiceId = result.choiceId;
+  } else {
+    await selectChoice(teamId, choiceId, "organizer_override");
+  }
+
   await confirmChoice(teamId);
 
   const supabase = getSupabaseServiceClient();
@@ -791,7 +867,7 @@ function mapTeamState(
   progress: ProgressRow | undefined,
   history: DecisionRecord[],
   delivery: DeliveryState | undefined,
-  latestFile: { name: string; url: string } | undefined,
+  latestFile: { id: string; name: string; url: string } | undefined,
 ): TeamState {
   const currentStageIndex = session.current_stage_index;
   const status =
@@ -817,6 +893,7 @@ function mapTeamState(
     selectedChoiceLabel: progress?.selected_choice_label ?? undefined,
     selectedSource: progress?.selected_source ?? undefined,
     decisionConfirmedAt: progress?.decision_confirmed_at ?? undefined,
+    currentFileId: latestFile?.id,
     currentFileName: progress?.file_name ?? latestFile?.name,
     currentFileUrl: progress?.file_url ?? latestFile?.url,
     lastActivityAt: progress?.last_activity_at ?? undefined,

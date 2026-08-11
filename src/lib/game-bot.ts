@@ -1,9 +1,8 @@
 import {
   answerBlueQ2Question,
   attachFile,
-  bindCaptain,
+  autoAssignCaptain,
   confirmChoice,
-  getActiveTeams,
   getSnapshot,
   getTeamByCaptainTelegramId,
   markUpdateProcessed,
@@ -52,14 +51,7 @@ async function handleMessage(message: TelegramMessage) {
   }
 
   if (message.text?.startsWith("/start")) {
-    const requestedTeamId = message.text.split(/\s+/)[1];
-
-    if (requestedTeamId?.startsWith("team-")) {
-      await registerCaptain(message, requestedTeamId);
-      return { ok: true };
-    }
-
-    await sendTeamPicker(message.chat.id);
+    await registerCaptain(message);
     return { ok: true };
   }
 
@@ -70,7 +62,7 @@ async function handleMessage(message: TelegramMessage) {
 
   await sendTelegramMessage(
     message.chat.id,
-    "Нажмите /start, выберите команду и дальше отвечайте на задания кнопками.",
+    "Нажмите /start, чтобы автоматически занять свободную команду, и дальше отвечайте на задания кнопками.",
   );
 
   return { ok: true };
@@ -86,15 +78,15 @@ async function handleCallbackQuery(callbackQuery: TelegramCallbackQuery) {
   }
 
   if (data.startsWith("join:")) {
-    await registerCaptainFromCallback(callbackQuery, chatId, data.slice("join:".length));
+    await registerCaptainFromCallback(callbackQuery, chatId);
     return { ok: true };
   }
 
   const team = await getTeamByCaptainTelegramId(callbackQuery.from.id);
 
   if (!team) {
-    await answerCallbackQuery(callbackQuery.id, "Сначала выберите команду");
-    await sendTelegramMessage(chatId, "Нажмите /start и выберите свою команду.");
+    await answerCallbackQuery(callbackQuery.id, "Сначала подключитесь к команде");
+    await sendTelegramMessage(chatId, "Нажмите /start, чтобы автоматически занять свободную команду.");
     return { ok: true };
   }
 
@@ -117,29 +109,12 @@ async function handleCallbackQuery(callbackQuery: TelegramCallbackQuery) {
   return { ok: true };
 }
 
-async function sendTeamPicker(chatId: number) {
-  const teams = await getActiveTeams();
-
-  await sendTelegramMessage(chatId, "Выберите вашу команду:", {
-    replyMarkup: {
-      inline_keyboard: teams.map((team) => [
-        {
-          text: team.captainTelegramId
-            ? `${team.name} уже занята`
-            : `${team.name} (${team.color === "red" ? "красная" : "синяя"})`,
-          callback_data: `join:${team.id}`,
-        },
-      ]),
-    },
-  });
-}
-
-async function registerCaptain(message: TelegramMessage, teamId: string) {
+async function registerCaptain(message: TelegramMessage) {
   if (!message.from) {
     return;
   }
 
-  const result = await bindCaptain(teamId, {
+  const result = await autoAssignCaptain({
     telegramId: message.from.id,
     chatId: message.chat.id,
     username: message.from.username,
@@ -153,9 +128,8 @@ async function registerCaptain(message: TelegramMessage, teamId: string) {
 async function registerCaptainFromCallback(
   callbackQuery: TelegramCallbackQuery,
   chatId: number,
-  teamId: string,
 ) {
-  const result = await bindCaptain(teamId, {
+  const result = await autoAssignCaptain({
     telegramId: callbackQuery.from.id,
     chatId,
     username: callbackQuery.from.username,
@@ -165,33 +139,32 @@ async function registerCaptainFromCallback(
 
   await answerCallbackQuery(
     callbackQuery.id,
-    result.status === "registered" ? "Команда привязана" : "Не удалось привязать",
+    result.status === "registered" || result.status === "already_registered"
+      ? "Команда привязана"
+      : "Свободных команд нет",
   );
   await respondToRegistrationResult(chatId, result);
 }
 
 async function respondToRegistrationResult(
   chatId: number,
-  result: Awaited<ReturnType<typeof bindCaptain>>,
+  result: Awaited<ReturnType<typeof autoAssignCaptain>>,
 ) {
-  if (result.status === "missing" || !result.team) {
-    await sendTelegramMessage(chatId, "Команда не найдена. Напишите организатору.");
+  if (result.status === "full" || !result.team) {
+    await sendTelegramMessage(chatId, "Свободных команд нет. Напишите организатору.");
     return;
   }
 
-  if (result.status === "already_taken") {
-    await sendTelegramMessage(
-      chatId,
-      `${result.team.name} уже привязана к другому капитану. Если это ошибка, скажите организатору.`,
-    );
-    return;
-  }
-
-  if (result.status === "captain_conflict") {
+  if (result.status === "already_registered") {
     await sendTelegramMessage(
       chatId,
       `Вы уже привязаны к ${result.team.name}. Один капитан может вести только одну команду.`,
     );
+
+    if (result.team.currentStageIndex >= 0 && result.team.currentStageIndex < scenarioLength) {
+      await sendCurrentStage(result.team);
+    }
+
     return;
   }
 
@@ -273,7 +246,7 @@ async function handleDocumentMessage(
   if (!team) {
     await sendTelegramMessage(
       message.chat.id,
-      "Сначала нажмите /start и выберите команду, чтобы файл попал в админку.",
+      "Сначала нажмите /start, чтобы занять свободную команду, и файл попадёт в админку.",
     );
     return;
   }
